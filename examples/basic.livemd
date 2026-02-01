@@ -1,0 +1,66 @@
+# Basic LLMGAN
+
+```elixir
+Mix.install([
+  {:llmgan, path: "Code/llmgan"}
+])
+```
+
+## Section
+
+```elixir
+require Logger
+
+# Ensure the application is started
+Application.ensure_all_started(:llmgan)
+
+IO.puts("=" |> String.duplicate(60))
+IO.puts("LLM Test Framework - Basic Usage Example")
+IO.puts("=" |> String.duplicate(60))
+```
+
+```elixir
+# Reset for clean state
+Llmgan.reset()
+```
+
+```elixir
+llm_config = %{
+  provider: :openai,
+  model: "qwen3-next-80b-a3b-instruct",
+  api_key: System.get_env("OPENAI_API_KEY") || "edmondfrank",
+  endpoint: "http://localhost:9069/openai/v1/chat/completions",
+  temperature: 0.7,
+}
+
+# 1. Generate test scenarios
+{:ok, scenarios} = Llmgan.generate_scenarios(:llm, %{
+  description: "中文成语翻译成英文",
+  count: 2,
+  llm_config: llm_config
+})
+
+IO.puts("\n📋 Generated Scenarios:")
+IO.inspect(scenarios, pretty: true)
+
+# 2. Run tests
+{:ok, results} = Llmgan.run_tests(scenarios, llm_config, 
+  prompt_template: "把中文成语：<%= @input %> 翻译成英文"
+)
+
+IO.puts("\n🧪 Test Results:")
+IO.inspect(results, pretty: true)
+
+# 3. Evaluate results
+eval_config = %{strategy: :llm_judge, threshold: 0.8, llm_config: llm_config}
+{:ok, evaluations} = Llmgan.evaluate_results(results, eval_config)
+
+IO.puts("\n📊 Evaluations:")
+IO.inspect(evaluations, pretty: true)
+
+# 4. Generate report
+report = Llmgan.generate_report()
+
+IO.puts("\n📄 Final Report:")
+IO.inspect(report, pretty: true)
+```
