@@ -127,6 +127,8 @@ defmodule Llmgan do
     If template contains `@input`, input is inserted there; otherwise input is
     appended after the template. If not provided, falls back to
     scenario.metadata.generation_prompt, then to raw input directly.
+  - `:task_timeout` - Timeout for Task.async_stream (defaults to `:timeout_ms`).
+    Increase this if you see `Task.Supervised.stream` timeout errors.
 
   ## Examples
 
@@ -157,8 +159,13 @@ defmodule Llmgan do
       prompt_template: Keyword.get(opts, :prompt_template)
     }
 
+    runner_opts = [
+      task_timeout: Keyword.get(opts, :task_timeout, Keyword.get(opts, :timeout_ms, 600_000)),
+      callback_fn: Keyword.get(opts, :callback_fn)
+    ]
+
     # Start a runner for this batch
-    case RunnerSupervisor.start_runner(scenarios, runner_config, opts) do
+    case RunnerSupervisor.start_runner(scenarios, runner_config, runner_opts) do
       {:ok, runner_pid} ->
         # Execute and wait for results
         result = Runner.run(runner_pid)
@@ -210,7 +217,12 @@ defmodule Llmgan do
       prompt_template: Keyword.get(opts, :prompt_template)
     }
 
-    case RunnerSupervisor.start_runner(scenarios, runner_config, opts) do
+    runner_opts = [
+      task_timeout: Keyword.get(opts, :task_timeout, Keyword.get(opts, :timeout_ms, 30_000)),
+      callback_fn: Keyword.get(opts, :callback_fn)
+    ]
+
+    case RunnerSupervisor.start_runner(scenarios, runner_config, runner_opts) do
       {:ok, runner_pid} ->
         # Start execution asynchronously
         Task.start(fn ->
@@ -241,6 +253,8 @@ defmodule Llmgan do
   - `:semantic_similarity` - Levenshtein, Jaccard, and cosine similarity
   - `:llm_judge` - Use another LLM to evaluate quality
   - `:custom` - User-provided evaluation function
+  - `:json_schema` - Validate JSON output conforms to schema
+  - `:json_field_match` - Validate specific JSON fields match expected values
 
   ## Examples
 
@@ -263,6 +277,32 @@ defmodule Llmgan do
 
       custom_config = %{strategy: :custom, custom_fn: custom_fn, threshold: 1.0}
       {:ok, evaluations} = Llmgan.evaluate_results(results, custom_config)
+
+      # JSON Schema validation
+      schema_config = %{
+        strategy: :json_schema,
+        threshold: 1.0,
+        json_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "age" => %{"type" => "integer"}
+          },
+          "required" => ["name", "age"]
+        }
+      }
+      {:ok, evaluations} = Llmgan.evaluate_results(results, schema_config)
+
+      # JSON Field Matching
+      field_config = %{
+        strategy: :json_field_match,
+        threshold: 1.0,
+        field_matchers: [
+          %{path: "user.name", expected: "John", match_type: :exact},
+          %{path: "user.email", expected: "@example.com", match_type: :contains}
+        ]
+      }
+      {:ok, evaluations} = Llmgan.evaluate_results(results, field_config)
   """
   @spec evaluate_results(list(map()), map()) :: {:ok, list(map())} | {:error, term()}
   def evaluate_results(results, evaluation_config) do

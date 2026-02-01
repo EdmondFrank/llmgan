@@ -259,7 +259,7 @@ defmodule Llmgan.ResultsAggregator do
     %{
       metrics
       | passed: metrics.passed + passed_count,
-        failed: metrics.failed + (if(evaluation.passed, do: 0, else: 1)),
+        failed: metrics.failed + if(evaluation.passed, do: 0, else: 1),
         evaluator_breakdown: evaluator_breakdown
     }
   end
@@ -302,14 +302,14 @@ defmodule Llmgan.ResultsAggregator do
 
     pass_rate =
       if total > 0 do
-        (metrics.passed / total) * 100
+        metrics.passed / total * 100
       else
         0.0
       end
 
     completion_rate =
       if total > 0 do
-        (metrics.completed / total) * 100
+        metrics.completed / total * 100
       else
         0.0
       end
@@ -317,7 +317,7 @@ defmodule Llmgan.ResultsAggregator do
     %{
       pass_rate: Float.round(pass_rate, 2),
       completion_rate: Float.round(completion_rate, 2),
-      error_rate: Float.round((metrics.errors / max(total, 1)) * 100, 2),
+      error_rate: Float.round(metrics.errors / max(total, 1) * 100, 2),
       avg_latency_ms: Float.round(avg_latency, 2),
       min_latency_ms: metrics.min_latency_ms,
       max_latency_ms: metrics.max_latency_ms,
@@ -328,7 +328,7 @@ defmodule Llmgan.ResultsAggregator do
 
   defp calculate_evaluator_performance(evaluator_breakdown) do
     Enum.map(evaluator_breakdown, fn {type, stats} ->
-      pass_rate = if(stats.count > 0, do: (stats.passed / stats.count) * 100, else: 0.0)
+      pass_rate = if(stats.count > 0, do: stats.passed / stats.count * 100, else: 0.0)
 
       %{
         evaluator: type,

@@ -5,86 +5,108 @@ defmodule Llmgan.Types do
 
   @typedoc "A test scenario with input and expected output"
   @type scenario :: %{
-    id: String.t(),
-    name: String.t(),
-    input: String.t() | map(),
-    expected_output: String.t() | map() | nil,
-    metadata: map(),
-    tags: list(String.t())
-  }
+          id: String.t(),
+          name: String.t(),
+          input: String.t() | map(),
+          expected_output: String.t() | map() | nil,
+          metadata: map(),
+          tags: list(String.t())
+        }
 
   @typedoc "Test result from running a scenario"
   @type test_result :: %{
-    scenario_id: String.t(),
-    scenario_name: String.t(),
-    input: String.t() | map(),
-    expected_output: String.t() | map() | nil,
-    actual_output: String.t() | map(),
-    latency_ms: integer(),
-    tokens_used: map() | nil,
-    timestamp: DateTime.t(),
-    success: boolean(),
-    error: String.t() | nil
-  }
+          scenario_id: String.t(),
+          scenario_name: String.t(),
+          input: String.t() | map(),
+          expected_output: String.t() | map() | nil,
+          actual_output: String.t() | map(),
+          latency_ms: integer(),
+          tokens_used: map() | nil,
+          timestamp: DateTime.t(),
+          success: boolean(),
+          error: String.t() | nil
+        }
 
   @typedoc "Evaluation result with scores"
   @type evaluation_result :: %{
-    scenario_id: String.t(),
-    test_result: test_result(),
-    scores: map(),
-    passed: boolean(),
-    evaluator_type: atom(),
-    metadata: map()
-  }
+          scenario_id: String.t(),
+          test_result: test_result(),
+          scores: map(),
+          passed: boolean(),
+          evaluator_type: atom(),
+          metadata: map()
+        }
 
   @typedoc "Template for generating test scenarios"
   @type scenario_template :: %{
-    id: String.t(),
-    name: String.t(),
-    prompt_template: String.t(),
-    variables: list(String.t()),
-    generation_strategy: atom(),
-    constraints: list(term()),
-    expected_output_template: String.t() | nil
-  }
+          id: String.t(),
+          name: String.t(),
+          prompt_template: String.t(),
+          variables: list(String.t()),
+          generation_strategy: atom(),
+          constraints: list(term()),
+          expected_output_template: String.t() | nil
+        }
 
   @typedoc "Configuration for LLM provider"
   @type llm_config :: %{
-    provider: atom(),
-    model: String.t(),
-    temperature: float(),
-    max_tokens: integer() | nil,
-    api_key: String.t() | nil,
-    endpoint: String.t() | nil,
-    additional_params: map()
-  }
+          provider: atom(),
+          model: String.t(),
+          temperature: float(),
+          max_tokens: integer() | nil,
+          api_key: String.t() | nil,
+          endpoint: String.t() | nil,
+          additional_params: map()
+        }
 
   @typedoc "Evaluation strategy configuration"
   @type evaluation_config :: %{
-    strategy: :exact_match | :semantic_similarity | :llm_judge | :custom,
-    threshold: float(),
-    custom_fn: (String.t(), String.t() -> float()) | nil,
-    llm_config: llm_config() | nil
-  }
+          strategy:
+            :exact_match
+            | :semantic_similarity
+            | :llm_judge
+            | :custom
+            | :json_schema
+            | :json_field_match,
+          threshold: float(),
+          custom_fn: (String.t(), String.t() -> float()) | nil,
+          llm_config: llm_config() | nil,
+          json_schema: map() | nil,
+          field_matchers: list(json_field_matcher()) | nil
+        }
+
+  @typedoc "JSON field matcher for structured output validation"
+  @type json_field_matcher :: %{
+          path: String.t() | list(String.t()),
+          expected: any(),
+          match_type: :exact | :contains | :regex | :type | nil
+        }
+
+  @typedoc "JSON schema for structured output validation"
+  @type json_schema :: %{
+          type: String.t(),
+          properties: map(),
+          required: list(String.t()) | nil
+        }
 
   @typedoc "Runner configuration for test execution"
   @type runner_config :: %{
-    llm_config: llm_config(),
-    rate_limit: integer() | nil,
-    timeout_ms: integer(),
-    max_retries: integer(),
-    batch_size: integer()
-  }
+          llm_config: llm_config(),
+          rate_limit: integer() | nil,
+          timeout_ms: integer(),
+          max_retries: integer(),
+          batch_size: integer()
+        }
 
   @typedoc "Aggregated test metrics"
   @type test_metrics :: %{
-    total_scenarios: integer(),
-    completed: integer(),
-    passed: integer(),
-    failed: integer(),
-    errors: integer(),
-    avg_latency_ms: float(),
-    total_tokens: map(),
-    score_distribution: map()
-  }
+          total_scenarios: integer(),
+          completed: integer(),
+          passed: integer(),
+          failed: integer(),
+          errors: integer(),
+          avg_latency_ms: float(),
+          total_tokens: map(),
+          score_distribution: map()
+        }
 end

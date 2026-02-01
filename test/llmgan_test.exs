@@ -26,50 +26,96 @@ defmodule LlmganTest do
                Llmgan.generate_scenarios(:llm, config)
     end
 
+    test "generates json output scenarios with schema" do
+      config = %{
+        description: "User profile generation",
+        json_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "age" => %{"type" => "integer"}
+          },
+          "required" => ["name"]
+        },
+        count: 3
+      }
+
+      {:ok, scenarios} = Llmgan.generate_scenarios(:json_output, config)
+
+      assert length(scenarios) == 3
+
+      assert Enum.all?(scenarios, fn s ->
+               Enum.member?(s.tags, "json_output") and
+                 is_map(s.metadata.json_schema)
+             end)
+
+      # Verify expected_output is JSON string
+      first = hd(scenarios)
+      assert is_binary(first.expected_output)
+
+      # Should be parseable JSON
+      {:ok, parsed} = Jason.decode(first.expected_output)
+      assert is_map(parsed)
+    end
+
+    test "generates json output scenarios requires schema" do
+      config = %{
+        description: "Test without schema"
+      }
+
+      assert {:error, :missing_json_schema} =
+               Llmgan.generate_scenarios(:json_output, config)
+    end
+
     test "generates template-based scenarios" do
-      {:ok, scenarios} = Llmgan.generate_scenarios(:template, %{
-        template: "Hello <%= @name %>",
-        variables_list: [
-          %{name: "World"},
-          %{name: "Elixir"}
-        ]
-      })
+      {:ok, scenarios} =
+        Llmgan.generate_scenarios(:template, %{
+          template: "Hello <%= @name %>",
+          variables_list: [
+            %{name: "World"},
+            %{name: "Elixir"}
+          ]
+        })
 
       assert length(scenarios) == 2
-      assert Enum.all?(scenarios, & &1.input in ["Hello World", "Hello Elixir"])
+      assert Enum.all?(scenarios, &(&1.input in ["Hello World", "Hello Elixir"]))
     end
 
     test "generates edge case scenarios" do
-      {:ok, scenarios} = Llmgan.generate_scenarios(:edge_cases, %{
-        template: "Input: <%= @input %>",
-        field: "input"
-      })
+      {:ok, scenarios} =
+        Llmgan.generate_scenarios(:edge_cases, %{
+          template: "Input: <%= @input %>",
+          field: "input"
+        })
 
       assert length(scenarios) > 0
-      assert Enum.any?(scenarios, & &1.metadata.type == :edge_case)
+      assert Enum.any?(scenarios, &(&1.metadata.type == :edge_case))
     end
 
     test "generates adversarial scenarios" do
-      {:ok, scenarios} = Llmgan.generate_scenarios(:adversarial, %{
-        template: "<%= @input %>"
-      })
+      {:ok, scenarios} =
+        Llmgan.generate_scenarios(:adversarial, %{
+          template: "<%= @input %>"
+        })
 
       assert length(scenarios) > 0
+
       assert Enum.any?(scenarios, fn s ->
-        Enum.member?(s.tags, "adversarial")
-      end)
+               Enum.member?(s.tags, "adversarial")
+             end)
     end
 
     test "generates fuzzing scenarios" do
-      {:ok, scenarios} = Llmgan.generate_scenarios(:fuzzing, %{
-        template: "Test: <%= @text %>",
-        base_variables: %{text: "base"},
-        fuzz_fields: ["text"],
-        count: 5
-      })
+      {:ok, scenarios} =
+        Llmgan.generate_scenarios(:fuzzing, %{
+          template: "Test: <%= @text %>",
+          base_variables: %{text: "base"},
+          fuzz_fields: ["text"],
+          count: 5
+        })
 
       assert length(scenarios) == 5
-      assert Enum.all?(scenarios, & &1.name =~ "Fuzz")
+      assert Enum.all?(scenarios, &(&1.name =~ "Fuzz"))
     end
 
     test "registers and uses templates" do
@@ -82,12 +128,17 @@ defmodule LlmganTest do
 
       assert :ok = Llmgan.register_template(template)
 
-      {:ok, scenarios} = Llmgan.generate_from_template("test_template", %{
-        question: "What is Elixir?"
-      }, 2)
+      {:ok, scenarios} =
+        Llmgan.generate_from_template(
+          "test_template",
+          %{
+            question: "What is Elixir?"
+          },
+          2
+        )
 
       assert length(scenarios) == 2
-      assert Enum.all?(scenarios, & &1.input == "Question: What is Elixir?")
+      assert Enum.all?(scenarios, &(&1.input == "Question: What is Elixir?"))
     end
   end
 
@@ -402,13 +453,14 @@ defmodule Llmgan.ScenarioGeneratorTest do
   end
 
   test "generates scenarios with EEx templates" do
-    {:ok, scenarios} = ScenarioGenerator.generate_with_strategy(:template, %{
-      template: "Name: <%= @name %>, Age: <%= @age %>",
-      variables_list: [
-        %{name: "Alice", age: 30},
-        %{name: "Bob", age: 25}
-      ]
-    })
+    {:ok, scenarios} =
+      ScenarioGenerator.generate_with_strategy(:template, %{
+        template: "Name: <%= @name %>, Age: <%= @age %>",
+        variables_list: [
+          %{name: "Alice", age: 30},
+          %{name: "Bob", age: 25}
+        ]
+      })
 
     assert length(scenarios) == 2
     [first, second] = scenarios
@@ -425,28 +477,186 @@ defmodule Llmgan.EvaluatorsTest do
   describe "similarity metrics" do
     test "calculates exact match" do
       # Identical strings
-      result1 = Evaluators.evaluate(
-        %{scenario_id: "s1", expected_output: "hello", actual_output: "hello"},
-        %{strategy: :exact_match}
-      )
+      result1 =
+        Evaluators.evaluate(
+          %{scenario_id: "s1", expected_output: "hello", actual_output: "hello"},
+          %{strategy: :exact_match}
+        )
+
       assert result1.scores.match == 1.0
 
       # Different strings
-      result2 = Evaluators.evaluate(
-        %{scenario_id: "s2", expected_output: "hello", actual_output: "world"},
-        %{strategy: :exact_match}
-      )
+      result2 =
+        Evaluators.evaluate(
+          %{scenario_id: "s2", expected_output: "hello", actual_output: "world"},
+          %{strategy: :exact_match}
+        )
+
       assert result2.scores.match == 0.0
     end
 
     test "semantic similarity handles empty strings" do
-      result = Evaluators.evaluate(
-        %{scenario_id: "s1", expected_output: "", actual_output: ""},
-        %{strategy: :semantic_similarity}
-      )
+      result =
+        Evaluators.evaluate(
+          %{scenario_id: "s1", expected_output: "", actual_output: ""},
+          %{strategy: :semantic_similarity}
+        )
 
       assert is_map(result.scores)
       assert result.scores.overall >= 0.0
+    end
+  end
+
+  describe "json evaluation" do
+    test "json schema validation with valid output" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"name": "John", "age": 30})
+      }
+
+      config = %{
+        strategy: :json_schema,
+        json_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "age" => %{"type" => "integer"}
+          },
+          "required" => ["name", "age"]
+        }
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == true
+      assert evaluation.evaluator_type == :json_schema
+      assert evaluation.scores.schema_valid == 1.0
+    end
+
+    test "json schema validation with invalid output" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"name": "John", "age": "thirty"})
+      }
+
+      config = %{
+        strategy: :json_schema,
+        json_schema: %{
+          "type" => "object",
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "age" => %{"type" => "integer"}
+          }
+        }
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == false
+      assert evaluation.scores.schema_valid == 0.0
+    end
+
+    test "json field matching with exact match" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"user": {"name": "John", "email": "john@example.com"}})
+      }
+
+      config = %{
+        strategy: :json_field_match,
+        field_matchers: [
+          %{path: "user.name", expected: "John", match_type: :exact}
+        ]
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == true
+      assert evaluation.scores.field_match_rate == 1.0
+    end
+
+    test "json field matching with contains match" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"user": {"email": "john@example.com"}})
+      }
+
+      config = %{
+        strategy: :json_field_match,
+        field_matchers: [
+          %{path: "user.email", expected: "@example.com", match_type: :contains}
+        ]
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == true
+    end
+
+    test "json field matching with regex match" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"user": {"email": "john@example.com"}})
+      }
+
+      config = %{
+        strategy: :json_field_match,
+        field_matchers: [
+          %{path: "user.email", expected: ".*@example\\.com", match_type: :regex}
+        ]
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == true
+    end
+
+    test "json field matching with partial match below threshold" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: ~s({"a": 1, "b": 2})
+      }
+
+      config = %{
+        strategy: :json_field_match,
+        threshold: 1.0,
+        field_matchers: [
+          %{path: "a", expected: 1, match_type: :exact},
+          %{path: "b", expected: 999, match_type: :exact}
+        ]
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == false
+      assert evaluation.scores.field_match_rate == 0.5
+    end
+
+    test "json parsing from markdown code blocks" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: "```json\n{\"name\": \"test\"}\n```"
+      }
+
+      config = %{
+        strategy: :json_field_match,
+        field_matchers: [
+          %{path: "name", expected: "test", match_type: :exact}
+        ]
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == true
+    end
+
+    test "json parsing handles invalid json gracefully" do
+      result = %{
+        scenario_id: "s1",
+        actual_output: "not valid json"
+      }
+
+      config = %{
+        strategy: :json_schema,
+        json_schema: %{"type" => "object"}
+      }
+
+      evaluation = Evaluators.evaluate(result, config)
+      assert evaluation.passed == false
+      assert evaluation.metadata.error =~ "Invalid JSON"
     end
   end
 end

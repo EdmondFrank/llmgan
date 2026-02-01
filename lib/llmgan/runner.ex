@@ -25,7 +25,8 @@ defmodule Llmgan.Runner do
     :completed_at,
     :circuit_breaker_state,
     :rate_limit_tokens,
-    :callback_fn
+    :callback_fn,
+    :task_timeout
   ]
 
   # Client API
@@ -39,9 +40,13 @@ defmodule Llmgan.Runner do
 
   @doc """
   Starts running the test scenarios.
+
+  ## Options
+
+  - `:timeout` - Maximum time to wait for all scenarios to complete (default: :infinity)
   """
-  def run(pid) do
-    GenServer.call(pid, :run, :infinity)
+  def run(pid, timeout \\ :infinity) do
+    GenServer.call(pid, :run, timeout)
   end
 
   @doc """
@@ -78,7 +83,9 @@ defmodule Llmgan.Runner do
       completed_at: nil,
       circuit_breaker_state: :closed,
       rate_limit_tokens: config.rate_limit || 10,
-      callback_fn: Keyword.get(opts, :callback_fn)
+      callback_fn: Keyword.get(opts, :callback_fn),
+      # Store task timeout separately from scenario timeout
+      task_timeout: Keyword.get(opts, :task_timeout, config.timeout_ms)
     }
 
     {:ok, state}
@@ -115,6 +122,9 @@ defmodule Llmgan.Runner do
     llm = create_llm_model(llm_config)
 
     # Execute scenarios with controlled parallelism
+    # Use a longer task timeout than the scenario timeout to allow for overhead
+    task_timeout = Map.get(state, :task_timeout, state.config.timeout_ms)
+
     results =
       state.scenarios
       |> Task.async_stream(
@@ -122,7 +132,7 @@ defmodule Llmgan.Runner do
           execute_scenario(scenario, llm, state.config)
         end,
         max_concurrency: state.config.batch_size,
-        timeout: state.config.timeout_ms,
+        timeout: task_timeout,
         ordered: false
       )
       |> Enum.map(fn

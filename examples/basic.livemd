@@ -44,7 +44,7 @@ IO.puts("\n📋 Generated Scenarios:")
 IO.inspect(scenarios, pretty: true)
 
 # 2. Run tests
-{:ok, results} = Llmgan.run_tests(scenarios, llm_config, 
+{:ok, results} = Llmgan.run_tests(scenarios, llm_config,
   prompt_template: "把中文成语：<%= @input %> 翻译成英文"
 )
 

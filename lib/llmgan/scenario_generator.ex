@@ -41,7 +41,7 @@ defmodule Llmgan.ScenarioGenerator do
   @spec generate_scenarios(String.t(), map(), non_neg_integer()) ::
           {:ok, list(Types.scenario())} | {:error, term()}
   def generate_scenarios(template_id, variables, count \\ 1) do
-    GenServer.call(__MODULE__, {:generate_scenarios, template_id, variables, count}, 60_000)
+    GenServer.call(__MODULE__, {:generate_scenarios, template_id, variables, count}, 600_000)
   end
 
   @doc """
@@ -50,7 +50,7 @@ defmodule Llmgan.ScenarioGenerator do
   @spec generate_with_strategy(atom(), map(), keyword()) ::
           {:ok, list(Types.scenario())} | {:error, term()}
   def generate_with_strategy(strategy, config, opts \\ []) do
-    GenServer.call(__MODULE__, {:generate_with_strategy, strategy, config, opts}, 60_000)
+    GenServer.call(__MODULE__, {:generate_with_strategy, strategy, config, opts}, 600_000)
   end
 
   @doc """
@@ -277,8 +277,201 @@ defmodule Llmgan.ScenarioGenerator do
     end
   end
 
+  defp execute_strategy(:json_output, config, _opts) do
+    description = Map.get(config, :description, "Generate JSON output test scenarios")
+    domain = Map.get(config, :domain, "general")
+    json_schema = Map.get(config, :json_schema)
+    count = Map.get(config, :count, 5)
+    llm_config = Map.get(config, :llm_config)
+
+    if is_nil(json_schema) do
+      {:error, :missing_json_schema}
+    else
+      if is_nil(llm_config) do
+        # Generate template-based JSON scenarios without LLM
+        generate_json_template_scenarios(description, json_schema, count, config)
+      else
+        # Use LLM to generate intelligent JSON test scenarios
+        generate_json_scenarios_with_llm(
+          description,
+          domain,
+          json_schema,
+          count,
+          llm_config,
+          config
+        )
+      end
+    end
+  end
+
   defp execute_strategy(strategy, _config, _opts) do
     {:error, {:unknown_strategy, strategy}}
+  end
+
+  defp generate_json_template_scenarios(description, schema, count, config) do
+    properties = Map.get(schema, "properties", %{})
+    required = Map.get(schema, "required", [])
+    batch_size = Map.get(config, :batch_size, 5)
+
+    # Generate indices for all scenarios
+    indices = 1..count
+
+    # Process in parallel with controlled concurrency
+    scenarios =
+      indices
+      |> Task.async_stream(
+        fn i ->
+          sample_data = generate_sample_data(properties, required, i)
+
+          %{
+            id: "json_scenario_#{i}_#{System.monotonic_time()}",
+            name: "JSON Output Test #{i}: #{description}",
+            input: "Generate JSON output for: #{description} (variation #{i})",
+            expected_output: Jason.encode!(sample_data),
+            metadata: %{
+              source: :json_template,
+              json_schema: schema,
+              variation_index: i,
+              description: description
+            },
+            tags: ["json_output", "structured" | Map.get(config, :tags, [])]
+          }
+        end,
+        max_concurrency: batch_size,
+        timeout: 30_000,
+        ordered: true
+      )
+      |> Enum.map(fn
+        {:ok, scenario} -> scenario
+        {:exit, reason} ->
+          Logger.warning("Failed to generate scenario: #{inspect(reason)}")
+          nil
+      end)
+      |> Enum.reject(&is_nil/1)
+
+    {:ok, scenarios}
+  end
+
+  defp generate_sample_data(properties, required, variation) do
+    properties
+    |> Enum.map(fn {field, field_schema} ->
+      is_required = Enum.member?(required, field)
+      value = generate_field_value(field, field_schema, variation, is_required)
+      {field, value}
+    end)
+    |> Enum.into(%{})
+  end
+
+  defp generate_field_value(_field, %{"type" => "string"}, variation, true) do
+    samples = ["example", "sample", "test", "value", "data"]
+    Enum.at(samples, rem(variation - 1, length(samples))) <> "#{variation}"
+  end
+
+  defp generate_field_value(_field, %{"type" => "string"}, _variation, false) do
+    nil
+  end
+
+  defp generate_field_value(_field, %{"type" => "integer"}, variation, true) do
+    variation * 10
+  end
+
+  defp generate_field_value(_field, %{"type" => "integer"}, _variation, false) do
+    nil
+  end
+
+  defp generate_field_value(_field, %{"type" => "number"}, variation, true) do
+    variation * 1.5
+  end
+
+  defp generate_field_value(_field, %{"type" => "boolean"}, variation, true) do
+    rem(variation, 2) == 0
+  end
+
+  defp generate_field_value(_field, %{"type" => "array"}, variation, true) do
+    for i <- 1..min(variation, 3), do: "item#{i}"
+  end
+
+  defp generate_field_value(_field, %{"type" => "object"}, variation, true) do
+    %{nested_field: "nested_value_#{variation}"}
+  end
+
+  defp generate_field_value(_field, schema, variation, _required) do
+    generate_field_value(nil, schema, variation, true)
+  end
+
+  defp generate_json_scenarios_with_llm(description, domain, schema, count, llm_config, config) do
+    prompt = build_json_generation_prompt(description, domain, schema, count)
+
+    case call_llm_for_scenarios(llm_config, prompt) do
+      {:ok, json_response} ->
+        case Jason.decode(json_response) do
+          {:ok, %{"scenarios" => scenario_list}} when is_list(scenario_list) ->
+            scenarios =
+              Enum.with_index(scenario_list, 1)
+              |> Enum.map(fn {item, idx} ->
+                %{
+                  id: "json_scenario_#{idx}_#{System.monotonic_time()}",
+                  name: Map.get(item, "name", "JSON Test #{idx}"),
+                  input: Map.get(item, "input", ""),
+                  expected_output: Jason.encode!(Map.get(item, "expected_output", %{})),
+                  metadata: %{
+                    source: :llm_generated,
+                    json_schema: schema,
+                    domain: domain,
+                    generation_prompt: description
+                  },
+                  tags: ["json_output", "structured", domain | Map.get(config, :tags, [])]
+                }
+              end)
+
+            {:ok, scenarios}
+
+          {:error, decode_error} ->
+            {:error, {:invalid_response_format, decode_error}}
+        end
+
+      {:error, reason} ->
+        {:error, {:llm_generation_failed, reason}}
+    end
+  end
+
+  defp build_json_generation_prompt(description, domain, schema, count) do
+    schema_str = Jason.encode!(schema)
+
+    """
+    You are a test scenario generator for JSON structured output testing.
+
+    Domain: #{domain}
+    Description: #{description}
+
+    The system should output JSON conforming to this schema:
+    ```json
+    #{schema_str}
+    ```
+
+    Generate #{count} diverse test scenarios. For each scenario:
+    1. Create an input that would require the system to produce structured JSON output
+    2. Define the expected JSON output that conforms to the schema
+
+    Include test cases for:
+    - Normal/typical cases with complete data
+    - Edge cases (empty strings, zero values, boundary conditions)
+    - Cases with optional fields omitted
+    - Cases with special characters or formatting
+
+    Respond with a JSON object in this exact format:
+    {
+      "scenarios": [
+        {
+          "name": "Descriptive name for test case",
+          "input": "The input that requires JSON output",
+          "expected_output": { /* JSON object conforming to schema */ }
+        }
+      ]
+    }
+
+    Ensure all expected_output values strictly conform to the provided schema.
+    """
   end
 
   defp generate_scenarios_with_llm(description, domain, count, llm_config, config) do
@@ -366,7 +559,9 @@ defmodule Llmgan.ScenarioGenerator do
         {:ok, updated_chain} ->
           last_message = List.last(updated_chain.messages)
           content = extract_content(last_message)
-          {:ok, content}
+          # Clean markdown code blocks from LLM response
+          cleaned_content = clean_json_response(content)
+          {:ok, cleaned_content}
 
         {:error, reason} ->
           {:error, reason}
@@ -376,10 +571,30 @@ defmodule Llmgan.ScenarioGenerator do
     end
   end
 
+  @doc """
+  Removes markdown JSON code block markers from LLM responses.
+  Handles ```json, ```, and inline `json` markers.
+  """
+  defp clean_json_response(content) when is_binary(content) do
+    content
+    # Remove ```json ... ``` blocks
+    |> String.replace(~r/```json\s*/i, "")
+    |> String.replace(~r/```\s*$/m, "")
+    # Remove standalone ``` markers
+    |> String.replace("```", "")
+    # Remove inline `json` markers
+    |> String.replace(~r/`json\s*/i, "")
+    |> String.replace(~r/`\s*$/m, "")
+    |> String.trim()
+  end
+
+  defp clean_json_response(content), do: content
+
   defp create_llm_model(llm_config) do
     case llm_config.provider do
       :openai ->
         alias LangChain.ChatModels.ChatOpenAI
+
         ChatOpenAI.new!(%{
           model: llm_config.model,
           temperature: Map.get(llm_config, :temperature, 0.8),
@@ -391,12 +606,13 @@ defmodule Llmgan.ScenarioGenerator do
 
       :anthropic ->
         alias LangChain.ChatModels.ChatAnthropic
+
         ChatAnthropic.new!(%{
           model: llm_config.model,
           temperature: Map.get(llm_config, :temperature, 0.8),
           max_tokens: Map.get(llm_config, :max_tokens, 2000),
           api_key: llm_config.api_key,
-          endpoint: Map.get(llm_config, :endpoint, "https://api.anthropic.com/v1"),
+          endpoint: Map.get(llm_config, :endpoint, "https://api.anthropic.com/v1")
         })
 
       _ ->

@@ -33,6 +33,12 @@ defmodule Llmgan.Evaluators do
       :custom ->
         evaluate_custom(test_result, evaluation_config)
 
+      :json_schema ->
+        evaluate_json_schema(test_result, evaluation_config)
+
+      :json_field_match ->
+        evaluate_json_field_match(test_result, evaluation_config)
+
       _ ->
         {:error, {:unknown_strategy, strategy}}
     end
@@ -136,6 +142,129 @@ defmodule Llmgan.Evaluators do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  @doc """
+  JSON Schema validation - validates that actual output conforms to expected JSON schema.
+  """
+  def evaluate_json_schema(test_result, evaluation_config) do
+    schema = Map.get(evaluation_config, :json_schema)
+
+    if is_nil(schema) do
+      {:error, :missing_json_schema}
+    else
+      actual = test_result.actual_output
+
+      case parse_json(actual) do
+        {:ok, parsed} ->
+          validation_result = validate_schema(parsed, schema)
+          passed = validation_result.valid
+
+          scores = %{
+            schema_valid: if(passed, do: 1.0, else: 0.0),
+            field_match_rate: validation_result.field_match_rate,
+            required_fields_present: validation_result.required_present,
+            overall: validation_result.field_match_rate
+          }
+
+          threshold = Map.get(evaluation_config, :threshold, 1.0)
+
+          %{
+            scenario_id: test_result.scenario_id,
+            test_result: test_result,
+            scores: scores,
+            passed: passed and scores.overall >= threshold,
+            evaluator_type: :json_schema,
+            metadata: %{
+              schema: schema,
+              validation_errors: validation_result.errors,
+              matched_fields: validation_result.matched_fields,
+              total_fields: validation_result.total_fields
+            }
+          }
+
+        {:error, reason} ->
+          %{
+            scenario_id: test_result.scenario_id,
+            test_result: test_result,
+            scores: %{schema_valid: 0.0, field_match_rate: 0.0},
+            passed: false,
+            evaluator_type: :json_schema,
+            metadata: %{
+              error: "Invalid JSON: #{reason}",
+              raw_output: actual
+            }
+          }
+      end
+    end
+  end
+
+  @doc """
+  JSON Field Match evaluation - validates specific fields in JSON output.
+  """
+  def evaluate_json_field_match(test_result, evaluation_config) do
+    matchers = Map.get(evaluation_config, :field_matchers, [])
+
+    actual = test_result.actual_output
+
+    case parse_json(actual) do
+      {:ok, parsed} ->
+        results =
+          Enum.map(matchers, fn matcher ->
+            path = matcher.path
+            expected = matcher.expected
+            match_type = Map.get(matcher, :match_type, :exact)
+
+            actual_value = get_value_at_path(parsed, path)
+            match_result = match_value(actual_value, expected, match_type)
+
+            %{
+              path: path,
+              expected: expected,
+              actual: actual_value,
+              matched: match_result.matched,
+              match_type: match_type,
+              error: match_result.error
+            }
+          end)
+
+        matched_count = Enum.count(results, & &1.matched)
+        total_count = length(results)
+        match_rate = if total_count > 0, do: matched_count / total_count, else: 1.0
+
+        scores = %{
+          field_match_rate: match_rate,
+          fields_matched: matched_count,
+          fields_total: total_count
+        }
+
+        threshold = Map.get(evaluation_config, :threshold, 1.0)
+
+        %{
+          scenario_id: test_result.scenario_id,
+          test_result: test_result,
+          scores: scores,
+          passed: match_rate >= threshold,
+          evaluator_type: :json_field_match,
+          metadata: %{
+            field_results: results,
+            unmatched_fields: Enum.reject(results, & &1.matched)
+          }
+        }
+
+      {:error, reason} ->
+        %{
+          scenario_id: test_result.scenario_id,
+          test_result: test_result,
+          scores: %{field_match_rate: 0.0},
+          passed: false,
+          evaluator_type: :json_field_match,
+          metadata: %{
+            error: "Invalid JSON: #{reason}",
+            raw_output: actual
+          }
+        }
     end
   end
 
@@ -428,5 +557,192 @@ defmodule Llmgan.Evaluators do
       _ ->
         ""
     end
+  end
+
+  # JSON Helper Functions
+
+  defp parse_json(value) when is_map(value), do: {:ok, value}
+
+  defp parse_json(value) when is_binary(value) do
+    # Try to extract JSON from markdown code blocks or raw JSON
+    json_str = extract_json_from_text(value)
+
+    case Jason.decode(json_str) do
+      {:ok, parsed} ->
+        {:ok, parsed}
+
+      {:error, _} ->
+        # Try to parse as Elixir map string
+        case Code.string_to_quoted(json_str) do
+          {:ok, quoted} when is_list(quoted) ->
+            try do
+              {:ok, Enum.into(quoted, %{})}
+            rescue
+              _ -> {:error, "Cannot parse JSON"}
+            end
+
+          {:ok, quoted} when is_map(quoted) ->
+            try do
+              {:ok, Macro.escape(quoted) |> Code.eval_quoted() |> elem(0)}
+            rescue
+              _ -> {:error, "Cannot parse JSON"}
+            end
+
+          _ ->
+            {:error, "Invalid JSON format"}
+        end
+    end
+  end
+
+  defp parse_json(_), do: {:error, "Unsupported type"}
+
+  defp extract_json_from_text(text) do
+    # Try to extract JSON from markdown code blocks
+    case Regex.run(~r/```json\s*\n(.*?)\n```/s, text) do
+      [_, json] ->
+        json
+
+      _ ->
+        # Try to extract from single backticks
+        case Regex.run(~r/`(.*?)`/s, text) do
+          [_, json] -> json
+          _ -> text
+        end
+    end
+  end
+
+  defp validate_schema(data, schema) do
+    required = Map.get(schema, "required", [])
+    properties = Map.get(schema, "properties", %{})
+
+    # Check required fields
+    missing_required = Enum.reject(required, &Map.has_key?(data, &1))
+    required_present = length(missing_required) == 0
+
+    # Validate each property
+    field_results =
+      Enum.map(properties, fn {field, field_schema} ->
+        value = Map.get(data, field)
+        validate_field(field, value, field_schema)
+      end)
+
+    matched_fields = Enum.count(field_results, & &1.valid)
+    total_fields = length(field_results)
+    field_match_rate = if total_fields > 0, do: matched_fields / total_fields, else: 1.0
+
+    errors =
+      if(required_present,
+        do: [],
+        else: ["Missing required fields: #{Enum.join(missing_required, ", ")}"]
+      ) ++
+        Enum.flat_map(field_results, & &1.errors)
+
+    %{
+      valid: required_present and field_match_rate == 1.0,
+      required_present: required_present,
+      field_match_rate: field_match_rate,
+      matched_fields: matched_fields,
+      total_fields: total_fields,
+      errors: errors
+    }
+  end
+
+  defp validate_field(field, value, schema) do
+    expected_type = Map.get(schema, "type")
+
+    type_valid =
+      case expected_type do
+        "string" -> is_binary(value)
+        "integer" -> is_integer(value)
+        "number" -> is_number(value)
+        "boolean" -> is_boolean(value)
+        "array" -> is_list(value)
+        "object" -> is_map(value)
+        nil -> true
+        _ -> true
+      end
+
+    %{
+      field: field,
+      valid: type_valid,
+      errors:
+        if(type_valid,
+          do: [],
+          else: ["Field '#{field}': expected #{expected_type}, got #{typeof(value)}"]
+        )
+    }
+  end
+
+  defp typeof(value) when is_binary(value), do: "string"
+  defp typeof(value) when is_integer(value), do: "integer"
+  defp typeof(value) when is_number(value), do: "number"
+  defp typeof(value) when is_boolean(value), do: "boolean"
+  defp typeof(value) when is_list(value), do: "array"
+  defp typeof(value) when is_map(value), do: "object"
+  defp typeof(_), do: "unknown"
+
+  defp get_value_at_path(data, path) when is_binary(path) do
+    parts = String.split(path, ".")
+    get_value_at_path(data, parts)
+  end
+
+  defp get_value_at_path(data, []), do: data
+
+  defp get_value_at_path(data, [key | rest]) do
+    value = Map.get(data, key) || Map.get(data, String.to_atom(key))
+    get_value_at_path(value, rest)
+  end
+
+  defp get_value_at_path(_nil, _), do: nil
+
+  defp match_value(actual, expected, :exact) do
+    matched = actual == expected
+
+    %{
+      matched: matched,
+      error: if(matched, do: nil, else: "Expected #{inspect(expected)}, got #{inspect(actual)}")
+    }
+  end
+
+  defp match_value(actual, expected, :contains) when is_binary(actual) and is_binary(expected) do
+    matched = String.contains?(actual, expected)
+
+    %{
+      matched: matched,
+      error: if(matched, do: nil, else: "Expected to contain '#{expected}', got '#{actual}'")
+    }
+  end
+
+  defp match_value(actual, expected, :contains) when is_list(actual) do
+    matched = Enum.member?(actual, expected)
+
+    %{
+      matched: matched,
+      error: if(matched, do: nil, else: "Expected list to contain #{inspect(expected)}")
+    }
+  end
+
+  defp match_value(actual, expected, :regex) when is_binary(actual) and is_binary(expected) do
+    case Regex.compile(expected) do
+      {:ok, regex} ->
+        matched = Regex.match?(regex, actual)
+
+        %{
+          matched: matched,
+          error: if(matched, do: nil, else: "Expected to match pattern '#{expected}'")
+        }
+
+      {:error, reason} ->
+        %{matched: false, error: "Invalid regex pattern: #{reason}"}
+    end
+  end
+
+  defp match_value(actual, _expected, :type) do
+    matched = actual != nil
+    %{matched: matched, error: if(matched, do: nil, else: "Value is nil")}
+  end
+
+  defp match_value(actual, expected, _unknown_type) do
+    match_value(actual, expected, :exact)
   end
 end

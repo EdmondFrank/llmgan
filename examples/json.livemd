@@ -1,0 +1,162 @@
+# Basic LLMGAN - Json
+
+```elixir
+Mix.install([
+  {:llmgan, path: "Code/llmgan"},
+  {:vega_lite, "~> 0.1.8"},
+  {:kino_vega_lite, "~> 0.1.11"}
+])
+```
+
+## JSON Schema Validation Example
+
+```elixir
+require Logger
+
+# Ensure the application is started
+Application.ensure_all_started(:llmgan)
+
+IO.puts("=" |> String.duplicate(60))
+IO.puts("LLM Test Framework - Basic Usage Example")
+IO.puts("=" |> String.duplicate(60))
+```
+
+```elixir
+# Reset for clean state
+Llmgan.reset()
+```
+
+## Section
+
+```elixir
+
+
+base_config = %{
+  provider: :openai,
+  api_key: System.get_env("OPENAI_API_KEY") || "edmondfrank",
+  endpoint: "http://localhost:9069/openai/v1/chat/completions",
+  temperature: 0.7,
+}
+
+llm_config = Map.put(base_config, :model, "kimi-k2-instruct")
+
+# Define a JSON schema for user profile generation
+user_schema = %{
+  "type" => "object",
+  "properties" => %{
+    "name" => %{"type" => "string"},
+    "age" => %{"type" => "integer"},
+    "email" => %{"type" => "string"}
+  },
+  "required" => ["name", "age"]
+}
+
+# Generate JSON output test scenarios
+{:ok, json_scenarios} = Llmgan.generate_scenarios(:json_output, %{
+  description: "Generate Some User Profiles with Detailed Data for Input, and Mark the User Information on the Input.",
+  json_schema: user_schema,
+  count: 25,
+  llm_config: llm_config
+})
+
+IO.puts("\n🧬 Generated JSON Scenarios:")
+json_scenarios
+|> Enum.with_index(1)
+|> Enum.each(fn {scenario, idx} ->
+  IO.puts("\nScenario ##{idx}: #{inspect(scenario)}")
+  end)
+```
+
+```elixir
+# Define multiple models to compare
+models = [
+  "kimi-k2-instruct",
+  "qwen3-next-80b-a3b-instruct",
+  "deepseek-v3",
+  "qwen3-235b-a22b",
+  "qwen3-next-80b-a3b-thinking",
+  "qwen3-235b-a22b-instruct-2507",
+  "qwen3-coder-480b-a35b-instruct"
+]
+llm_configs = Enum.map(models, fn model ->
+  Map.put(base_config, :model, model)
+end)
+# Run tests and evaluate across multiple models
+model_results = Enum.map(llm_configs, fn llm_config ->
+  IO.puts("\n" <> String.duplicate("=", 60))
+  IO.puts("Testing Model: #{llm_config.model}")
+  IO.puts(String.duplicate("=", 60))
+
+  # Run tests with a JSON prompt template
+  {:ok, json_results} = Llmgan.run_tests(json_scenarios, llm_config,
+    prompt_template: "Extract user profiles <%= @input %>. Respond with valid JSON following the following schema <%= @json_schema %>. Do not output anything else."
+  )
+
+  IO.puts("\n📊 JSON Test Results:")
+  json_results
+  |> Enum.each(fn result ->
+    IO.puts("\n#{result.scenario_name}")
+    IO.puts("  Output: #{String.slice(to_string(result.actual_output), 0, 100)}...")
+    IO.puts("  Success: #{result.success}")
+  end)
+
+  # Evaluate with JSON Field Matching
+  field_eval_config = %{
+    strategy: :json_schema,
+    json_schema: user_schema,
+    threshold: 0.9
+  }
+
+  {:ok, field_evaluations} = Llmgan.evaluate_results(json_results, field_eval_config)
+
+  IO.puts("\n🔍 JSON Field Matching Results:")
+  field_evaluations
+  |> Enum.each(fn eval ->
+    status = if(eval.passed, do: "✅ PASS", else: "❌ FAIL")
+    IO.puts("\n#{eval.scenario_id}: #{status}")
+    IO.puts("  Fields Matched: #{eval.scores[:field_match_rate]}")
+
+    # eval.metadata.field_results
+    # |> Enum.each(fn result ->
+    #   icon = if(result.matched, do: "✓", else: "✗")
+    #   IO.puts("    #{icon} #{result.path}: #{result.match_type}")
+    # end)
+  end)
+
+  # Calculate accuracy for this model
+  total = length(field_evaluations)
+  passed = Enum.count(field_evaluations, & &1.passed)
+  accuracy = if total > 0, do: passed / total * 100, else: 0.0
+
+  IO.puts("\n📈 Model #{llm_config.model} Accuracy: #{Float.round(accuracy, 2)}%")
+
+  %{
+    model: llm_config.model,
+    accuracy: accuracy,
+    passed: passed,
+    total: total
+  }
+end)
+```
+
+```elixir
+# Display final comparison chart
+alias VegaLite, as: Vl
+
+# Create accuracy comparison chart
+Vl.new(width: 600, height: 400, title: "JSON Schema Extract Accuracy by Model")
+|> Vl.data_from_values(model_results)
+|> Vl.mark(:bar, corner_radius_end: 4)
+|> Vl.encode_field(:x, "model",
+    type: :nominal,
+    axis: [label_angle: -45, label_font_size: 11, title: "LLM Model"],
+    sort: nil
+  )
+|> Vl.encode_field(:y, "accuracy",
+    type: :quantitative,
+    scale: [domain: [0, 100]],
+    axis: [title: "Validation Accuracy (%)", label_font_size: 12]
+  )
+|> Vl.encode_field(:color, "model", type: :nominal, legend: [title: "Model", orient: :right])
+|> Vl.encode_field(:tooltip, "accuracy", type: :quantitative, format: ".2f", title: "Accuracy %")
+```
